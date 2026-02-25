@@ -174,6 +174,24 @@ internal class RazorSliceProxyGenerator : IIncrementalGenerator
                     if (directives.InheritsDirective is not null)
                     {
                         var modelTypeName = RazorDirectiveParser.ExtractModelType(directives.InheritsDirective);
+                        ITypeSymbol? modelType = null;
+                        try
+                        {
+                            modelType = RazorDirectiveParser.ExtractModelType(directives, compilation);
+                        }
+                        catch (ModelResolutionException ex)
+                        {
+                            var descriptor = new DiagnosticDescriptor(
+                                "RSG0002",
+                                "Unresolvable Model Type",
+                                $"Could not resolve model type '{ex.FailedResolution}' for slice '{relativeFilePath}'. The generated proxy will not have a strongly-typed Create method.",
+                                "TypeResolution",
+                                DiagnosticSeverity.Info,
+                                true);
+                            context.ReportDiagnostic(Diagnostic.Create(descriptor, Location.None));
+                        }
+                        
+                        resolvedModelType = modelType?.ToDisplayString();
                         if (modelTypeName is not null)
                         {
                             resolvedModelType = ModelTypeResolver.ResolveModelType(
@@ -191,7 +209,7 @@ internal class RazorSliceProxyGenerator : IIncrementalGenerator
                                     "Unresolvable Model Type",
                                     $"Could not resolve model type '{modelTypeName}' for slice '{relativeFilePath}'. The generated proxy will not have a strongly-typed Create method.",
                                     "TypeResolution",
-                                    DiagnosticSeverity.Warning,
+                                    DiagnosticSeverity.Info,
                                     true);
                                 context.ReportDiagnostic(Diagnostic.Create(descriptor, Location.None));
                             }

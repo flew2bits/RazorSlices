@@ -1,0 +1,8 @@
+@using RazorSlices.Samples.WebApp.Slices.Ipsum
+@inherits IpsumOtherBase<IpsumOther, IpsumModel>
+
+@{
+    OtherContent = new IpsumOther("My Name");
+}
+
+<div>@OtherContent.Name</div>

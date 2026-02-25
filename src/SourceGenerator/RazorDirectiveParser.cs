@@ -1,5 +1,9 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Linq;
+using System.Reflection.Metadata;
+using System.Text;
+using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.Text;
 
 namespace RazorSlices.SourceGenerator;
@@ -27,6 +31,7 @@ internal static class RazorDirectiveParser
                 }
             }
         }
+
         return null;
     }
 
@@ -48,6 +53,7 @@ internal static class RazorDirectiveParser
                 {
                     value = value.Substring(0, value.Length - 1).Trim();
                 }
+
                 if (value.Length == 0)
                 {
                     continue;
@@ -70,9 +76,10 @@ internal static class RazorDirectiveParser
                 }
             }
         }
+
         return usings;
     }
-    
+
     /// <summary>
     /// Parses the @namespace directive value from the given source text.
     /// Returns null if no @namespace directive is found.
@@ -91,6 +98,118 @@ internal static class RazorDirectiveParser
                 }
             }
         }
+
+        return null;
+    }
+
+    internal static ITypeSymbol? ExtractModelType(ResolvedDirectives directives, Compilation compilation)
+    {
+        if (directives.InheritsDirective is null) return null;
+
+
+        var type = ResolveTypeFromString(directives.InheritsDirective, directives.UsingDirectives, compilation);
+        if (type is null) throw new ModelResolutionException(directives.InheritsDirective);
+
+        var razorSliceGeneric = compilation.GetTypeByMetadataName("RazorSlices.RazorSlice`1");
+        var razorSliceNonGeneric = compilation.GetTypeByMetadataName("RazorSlices.RazorSlice");
+
+        var current = type;
+        while (current is not null)
+        {
+            var originalDefinition = current.OriginalDefinition;
+            if (SymbolEqualityComparer.Default.Equals(originalDefinition, razorSliceGeneric) ||
+                SymbolEqualityComparer.Default.Equals(originalDefinition, razorSliceNonGeneric))
+            {
+                if (current is { IsGenericType: true })
+                    return current.TypeArguments.FirstOrDefault();
+                break;
+            }
+
+            current = current.BaseType;
+        }
+
+        return null;
+    }
+
+    private static INamedTypeSymbol? ResolveTypeFromString(string typeString, List<UsingDirective> usingDirectives,
+        Compilation compilation)
+    {
+        var (typeName, genericArgs) = ParseGenericType(typeString);
+
+        var baseType = TryResolveTypeName(typeName, usingDirectives, compilation, genericArgs.Count);
+        if (baseType is null) throw new ModelResolutionException(typeName);
+
+        if (genericArgs.Count == 0) return baseType;
+
+        var resolvedArgs = new List<ITypeSymbol>();
+        foreach (var argString in genericArgs)
+        {
+            var resolvedArg = ResolveTypeFromString(argString, usingDirectives, compilation);
+            if (resolvedArg is null) throw new ModelResolutionException(argString);
+            resolvedArgs.Add(resolvedArg);
+        }
+
+        return baseType.Construct(resolvedArgs.ToArray());
+    }
+
+    private static (string typeName, List<string> genericArgs) ParseGenericType(string typeString)
+    {
+        typeString = typeString.Trim();
+
+        var openAngle = typeString.IndexOf('<');
+        if (openAngle < 0)
+            return (typeString, []);
+
+        var typeName = typeString.Substring(0, openAngle).Trim();
+        var genericPart = typeString.Substring(openAngle + 1, typeString.Length - openAngle - 2).Trim();
+
+        var args = new List<string>();
+        var current = new StringBuilder();
+        var depth = 0;
+
+        foreach (var ch in genericPart)
+        {
+            switch (ch)
+            {
+                case '<':
+                    depth++;
+                    current.Append(ch);
+                    break;
+                case '>':
+                    depth--;
+                    current.Append(ch);
+                    break;
+                case ',' when depth == 0:
+                    args.Add(current.ToString().Trim());
+                    current.Clear();
+                    break;
+                default:
+                    current.Append(ch);
+                    break;
+            }
+        }
+        
+        if (current.Length > 0)
+            args.Add(current.ToString().Trim());
+
+        return (typeName, args);
+    }
+
+    private static INamedTypeSymbol? TryResolveTypeName(string typeName, List<UsingDirective> usingDirectives,
+        Compilation compilation, int genericArity = 0)
+    {
+        var metadataName = genericArity > 0 ? $"{typeName}`{genericArity}" : typeName;
+        
+        var type = compilation.GetTypeByMetadataName(metadataName);
+        if (type is not null) return type;
+
+        foreach (var usingDirective in usingDirectives.Where(u => u.Alias is null))
+        {
+            var qualifiedName = $"{usingDirective.NamespaceOrType}.{metadataName}";
+            type = compilation.GetTypeByMetadataName(qualifiedName);
+            if (type is not null) return type;
+        }
+
         return null;
     }
 
@@ -131,7 +250,6 @@ internal static class RazorDirectiveParser
 
 internal readonly struct UsingDirective(string namespaceOrType, string? alias) : IEquatable<UsingDirective>
 {
-
     /// <summary>
     /// The namespace or fully qualified type (for alias usings).
     /// </summary>
